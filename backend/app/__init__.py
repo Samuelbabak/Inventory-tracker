@@ -1,0 +1,1 @@
+"""Haynes inventory application."""

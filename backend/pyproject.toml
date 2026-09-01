@@ -1,0 +1,40 @@
+[project]
+name = "haynes-inventory-api"
+version = "0.1.0"
+description = "Haynes inventory and material request platform"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic==1.16.5",
+    "fastapi==0.116.1",
+    "psycopg[binary]==3.2.10",
+    "pydantic-settings==2.10.1",
+    "pwdlib[argon2]==0.2.1",
+    "sqlalchemy==2.0.43",
+    "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==8.4.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.11",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
