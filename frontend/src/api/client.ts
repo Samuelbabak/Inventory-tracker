@@ -185,6 +185,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  listSubstituteCandidates: (requestId: string, allocationId: string) =>
+    request<SubstituteCandidateResponse[]>(`/requests/${requestId}/allocations/${allocationId}/substitutes`),
+  substituteAllocation: (
+    requestId: string,
+    payload: SubstituteAllocationRequest,
+  ) =>
+    request<MaterialRequest>(`/requests/${requestId}/substitutions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  reallocate: (payload: ReallocateStockRequest) =>
+    request<ReallocationResponse>('/requests/reallocations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   handoffRequest: (requestId: string) =>
     request<MaterialRequest>(`/requests/${requestId}/handoff`, { method: 'POST' }),
   cancelRequest: (requestId: string, reason: string) =>

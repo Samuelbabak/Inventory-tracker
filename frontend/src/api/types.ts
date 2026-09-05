@@ -95,6 +95,35 @@ export interface UnitConversion {
   factor: string
 }
 
+export interface SubstituteCandidateResponse {
+  stock_position_id: string
+  item_id: string
+  sku: string
+  description: string
+  location_code: string
+  available_qty: string
+  uom: string
+}
+
+export interface SubstituteAllocationRequest {
+  allocation_id: string
+  alternate_stock_position_id: string
+  quantity: number
+  reason: string
+}
+
+export interface ReallocateStockRequest {
+  source_allocation_id: string
+  target_request_id: string
+  quantity: number
+  reason: string
+}
+
+export interface ReallocationResponse {
+  status: 'success'
+  message: string
+}
+
 export interface ApprovedAlternate {
   id: string
   item_id: string
@@ -136,6 +165,7 @@ export interface Allocation {
   fulfillment_item_id: string
   fulfillment_sku: string
   fulfillment_description: string
+  fulfillment_uom: string
   is_substitute: boolean
   location_code: string
   quantity: string

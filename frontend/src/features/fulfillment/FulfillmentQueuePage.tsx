@@ -1,8 +1,8 @@
-import { ArrowRight, CircleAlert, CloudOff, ListChecks, PackageCheck, Play } from 'lucide-react'
+import { ArrowRight, CircleAlert, CloudOff, ListChecks, PackageCheck, Play, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../../api/client'
-import type { MaterialRequest } from '../../api/types'
+import type { MaterialRequest, Allocation } from '../../api/types'
 import { useAuth } from '../../app/auth'
 import { listOfflineGrants, type LocalOfflineGrant } from '../../offline/store'
 import { formatRequestDate, formatRequestState } from '../requests/requestUi'
@@ -35,6 +35,13 @@ export function FulfillmentQueuePage() {
   const navigate = useNavigate()
   const [result, setResult] = useState<QueueResult | null>(null)
   const [claimingId, setClaimingId] = useState<string | null>(null)
+  const [reallocatingId, setReallocatingId] = useState<string | null>(null)
+  const [reallocateDraft, setReallocateDraft] = useState({
+    allocationId: '',
+    targetRequestId: '',
+    quantity: '',
+    reason: '',
+  })
   const requests = result?.requests ?? []
   const serverActiveRequests = requests.filter(
     (request) => activeStates.has(request.state) && request.claimed_by_user_id === user?.id,
@@ -107,6 +114,38 @@ export function FulfillmentQueuePage() {
     setClaimingId(null)
   }
 
+  async function handleReallocate() {
+    if (!reallocateDraft.allocationId || !reallocateDraft.targetRequestId || !reallocateDraft.quantity || !reallocateDraft.reason.trim()) {
+      setResult((current) => ({
+        ...current,
+        error: 'Please fill in all reallocation fields',
+      }))
+      return
+    }
+    setClaimingId('reallocate')
+    try {
+      await api.reallocate({
+        source_allocation_id: reallocateDraft.allocationId,
+        target_request_id: reallocateDraft.targetRequestId,
+        quantity: Number(reallocateDraft.quantity),
+        reason: reallocateDraft.reason.trim(),
+      })
+      setReallocatingId(null)
+      setReallocateDraft({ allocationId: '', targetRequestId: '', quantity: '', reason: '' })
+      // Reload queue to reflect changes
+      if (user) {
+        void loadQueue(user.id).then((loaded) => setResult(loaded))
+      }
+    } catch (error_) {
+      setResult((current) => ({
+        ...current,
+        error: error_ instanceof ApiError ? error_.message : 'Reallocation failed',
+      }))
+    } finally {
+      setClaimingId(null)
+    }
+  }
+
   return (
     <div className="page fulfillment-page">
       <header className="page-heading">
@@ -161,11 +200,77 @@ export function FulfillmentQueuePage() {
                 <button type="button" className="button secondary" disabled={claimingId !== null} onClick={() => void claim(request.id)}>
                   {claimingId === request.id ? 'Claiming...' : 'Claim'}
                 </button>
+                {user?.roles.includes('inventory_manager') && (
+                  <button type="button" className="button ghost" disabled={claimingId !== null} onClick={() => {
+                    setReallocatingId(request.id)
+                    setReallocateDraft({ allocationId: '', targetRequestId: '', quantity: '', reason: '' })
+                  }}>
+                    Reallocate
+                  </button>
+                )}
               </article>
             )
           })}
         </div>
       </section>
+
+      {reallocatingId && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Reallocate Stock</h2>
+              <button type="button" className="button-icon" onClick={() => setReallocatingId(null)}><X size={20} /></button>
+            </div>
+            <div className="modal-body">
+              {requests.find(r => r.id === reallocatingId) && (
+                <>
+                  <label>
+                    <span>Source Allocation</span>
+                    <select value={reallocateDraft.allocationId} onChange={(e) => setReallocateDraft(prev => ({ ...prev, allocationId: e.target.value }))}>
+                      <option value="">Select allocation...</option>
+                      {requests.find(r => r.id === reallocatingId)?.lines.flatMap(l => l.allocations).map(a => (
+                        <option key={a.id} value={a.id}>{a.fulfillment_sku} - {a.location_code} ({a.quantity} {a.fulfillment_uom})</option>
+                      ))}
+                    </select>
+                  </label>
+                  {reallocateDraft.allocationId && (
+                    <label>
+                      <span>Target Request (Backordered)</span>
+                      <select value={reallocateDraft.targetRequestId} onChange={(e) => setReallocateDraft(prev => ({ ...prev, targetRequestId: e.target.value }))}>
+                        <option value="">Select target request...</option>
+                        {requests
+                          .filter(r => r.id !== reallocatingId)
+                          .filter(r => r.lines.some(l => {
+                            const sourceAlloc = requests.find(req => req.id === reallocatingId)?.lines.flatMap(line => line.allocations).find(a => a.id === reallocateDraft.allocationId);
+                            return l.sku === sourceAlloc?.fulfillment_sku && Number(l.backordered_qty) > 0;
+                          }))
+                          .map(r => (
+                            <option key={r.id} value={r.id}>{r.request_number} - {r.recipient_name}</option>
+                          ))
+                        }
+                      </select>
+                    </label>
+                  )}
+                  <label>
+                    <span>Quantity</span>
+                    <input type="number" value={reallocateDraft.quantity} onChange={(e) => setReallocateDraft(prev => ({ ...prev, quantity: e.target.value }))} />
+                  </label>
+                  <label>
+                    <span>Reason</span>
+                    <input value={reallocateDraft.reason} onChange={(e) => setReallocateDraft(prev => ({ ...prev, reason: e.target.value }))} />
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="button secondary" onClick={() => setReallocatingId(null)}>Cancel</button>
+              <button type="button" className="button primary" disabled={claimingId === 'reallocate'} onClick={() => void handleReallocate()}>
+                {claimingId === 'reallocate' ? 'Processing...' : 'Confirm Reallocation'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

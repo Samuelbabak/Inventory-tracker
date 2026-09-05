@@ -206,6 +206,8 @@ function PickTask({
   const [drafts, setDrafts] = useState(() => allocationDrafts(request))
   const [busyId, setBusyId] = useState<string | null>(null)
   const [handoffConfirmed, setHandoffConfirmed] = useState(false)
+  const [substituteCandidates, setSubstituteCandidates] = useState<Record<string, SubstituteCandidateResponse[]>>({})
+  const [substituteDraft, setSubstituteDraft] = useState<Record<string, { candidateId: string; quantity: string; reason: string }}>({})
   const ownedByUser = request.claimed_by_user_id === user?.id
   const canClaim = ['submitted', 'partially_fulfilled'].includes(request.state) && request.claimed_by_user_id === null
   const allocations = request.lines.flatMap((line) => line.allocations.map((allocation) => ({ line, allocation })))
@@ -278,6 +280,59 @@ function PickTask({
     }
   }
 
+  async function fetchSubstitutes(allocation: Allocation) {
+    if (!isOnline) {
+      onError('Substitutions are not available offline')
+      return
+    }
+    setBusyId(`sub-list-${allocation.id}`)
+    try {
+      const candidates = await api.listSubstituteCandidates(request.id, allocation.id)
+      setSubstituteCandidates((current) => ({ ...current, [allocation.id]: candidates }))
+    } catch (error_) {
+      onError(error_ instanceof ApiError ? error_.message : 'Could not load substitute candidates')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function confirmSubstitution(allocation: Allocation) {
+    const draft = substituteDraft[allocation.id]
+    if (!draft || !draft.candidateId || !draft.reason.trim()) {
+      onError('Please select a candidate and provide a reason')
+      return
+    }
+    const candidate = substituteCandidates[allocation.id]?.find((c) => c.stock_position_id === draft.candidateId)
+    if (!candidate) {
+      onError('Invalid substitute candidate selected')
+      return
+    }
+    setBusyId(`sub-confirm-${allocation.id}`)
+    try {
+      const payload = {
+        allocation_id: allocation.id,
+        alternate_stock_position_id: draft.candidateId,
+        quantity: Number(draft.quantity),
+        reason: draft.reason.trim(),
+      }
+      onUpdated(await api.substituteAllocation(request.id, payload))
+      setSubstituteCandidates((current) => {
+        const next = { ...current }
+        delete next[allocation.id]
+        return next
+      })
+      setSubstituteDraft((current) => {
+        const next = { ...current }
+        delete next[allocation.id]
+        return next
+      })
+    } catch (error_) {
+      onError(error_ instanceof ApiError ? error_.message : 'Substitution could not be confirmed')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function handoff() {
     setBusyId('handoff')
     try {
@@ -331,6 +386,51 @@ function PickTask({
       )}
 
       <div className="pick-layout">
+        {Object.entries(substituteCandidates).map(([allocationId, candidates]) => {
+          const { allocation, line } = allocations.find(({ allocation: a }) => a.id === allocationId) || {};
+          const available = allocation ? Number(allocation.quantity) - Number(allocation.released_qty) : '1';
+
+          return (
+            <section className="substitution-panel" key={allocationId}>
+              <div className="section-heading">
+                <div><p className="eyebrow">Substitution</p><h2>Select substitute for position {allocationId.slice(-4)}</h2></div>
+                <button type="button" className="button secondary" onClick={() => setSubstituteCandidates((current) => {
+                  const next = { ...current };
+                  delete next[allocationId];
+                  return next;
+                })}>Cancel</button>
+              </div>
+              <div className="candidate-list">
+                {candidates.map((candidate) => (
+                  <div className="candidate-item" key={candidate.stock_position_id}>
+                    <div className="candidate-info">
+                      <strong>{candidate.sku}</strong>
+                      <small>{candidate.description}</small>
+                      <span className="candidate-stock">{candidate.available_qty} {candidate.uom} available</span>
+                    </div>
+                    <button 
+                      type="button" 
+                      className="button secondary" 
+                      disabled={busyId !== null} 
+                      onClick={() => setSubstituteDraft((current) => ({ ...current, [allocationId]: { candidateId: candidate.stock_position_id, quantity: String(available), reason: '' } }))}
+                    >
+                      Select
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {substituteDraft[allocationId] && (
+                <div className="substitution-form">
+                  <label><span>Quantity to substitute / {allocation?.fulfillment_uom || line?.uom}</span><input type="number" inputMode="decimal" value={substituteDraft[allocationId].quantity} onChange={(event) => setSubstituteDraft((current) => ({ ...current, [allocationId]: { ...substituteDraft[allocationId], quantity: event.target.value } }))} /></label>
+                  <label><span>Reason for substitution</span><input value={substituteDraft[allocationId].reason} onChange={(event) => setSubstituteDraft((current) => ({ ...current, [allocationId]: { ...substituteDraft[allocationId], reason: event.target.value } }))} /></label>
+                  <button type="button" className="button primary" disabled={busyId !== null} onClick={() => void confirmSubstitution(allocation!)}>
+                    {busyId === `sub-confirm-${allocationId}` ? 'Confirming...' : 'Confirm substitution'}
+                  </button>
+                </div>
+              )}
+            </section>
+          );
+        })})}
         <section className="pick-list-section">
           <div className="section-heading"><div><p className="eyebrow">Location order</p><h2>Pick positions</h2></div><span className="count-label">{allocations.length} positions</span></div>
           <div className="pick-list">
@@ -347,7 +447,7 @@ function PickTask({
                       <strong>{allocation.fulfillment_sku}</strong>
                       <small>{allocation.is_substitute ? `${allocation.fulfillment_description} / substitute for ${line.sku}` : line.description}</small>
                     </span>
-                    <span className="pick-target"><strong>{formatRequestQuantity(allocation.quantity)}</strong><small>{line.uom} allocated</small></span>
+                    <span className="pick-target"><strong>{formatRequestQuantity(allocation.quantity)}</strong><small>{allocation.fulfillment_uom || line.uom} allocated</small></span>
                     {allocation.pick_confirmed && <span className="confirmed-label"><CheckCircle2 size={18} aria-hidden="true" /> Confirmed</span>}
                   </div>
                   <div className="expected-location"><MapPin size={18} aria-hidden="true" /><span><small>Expected location</small><strong>{allocation.location_code}</strong></span></div>
@@ -355,11 +455,18 @@ function PickTask({
                     <div className="pick-entry-grid">
                       <label><span><ScanLine size={16} aria-hidden="true" /> Location scan</span><input value={draft.location} onChange={(event) => changeDraft(allocation.id, { location: event.target.value })} autoCapitalize="characters" /></label>
                       <label><span><ScanLine size={16} aria-hidden="true" /> Item scan</span><input value={draft.sku} onChange={(event) => changeDraft(allocation.id, { sku: event.target.value })} autoCapitalize="characters" /></label>
-                      <label><span>Picked / {line.uom}</span><input type="number" inputMode="decimal" min={allocation.issued_qty} max={available} step="0.001" value={draft.quantity} onChange={(event) => changeDraft(allocation.id, { quantity: event.target.value })} /></label>
+                      <label><span>Picked / {allocation.fulfillment_uom || line.uom}</span><input type="number" inputMode="decimal" min={allocation.issued_qty} max={available} step="0.001" value={draft.quantity} onChange={(event) => changeDraft(allocation.id, { quantity: event.target.value })} /></label>
                       {isShort && <label className="shortage-field"><span>Shortage reason</span><input value={draft.shortageReason} onChange={(event) => changeDraft(allocation.id, { shortageReason: event.target.value })} maxLength={500} /></label>}
-                      <button type="button" className="button primary" disabled={busyId !== null} onClick={() => void confirmPick(allocation)}>
-                        <Check size={18} aria-hidden="true" /> {busyId === allocation.id ? 'Confirming...' : 'Confirm pick'}
-                      </button>
+                      <div className="pick-actions">
+                        <button type="button" className="button primary" disabled={busyId !== null} onClick={() => void confirmPick(allocation)}>
+                          <Check size={18} aria-hidden="true" /> {busyId === allocation.id ? 'Confirming...' : 'Confirm pick'}
+                        </button>
+                        {!allocation.is_substitute && (
+                          <button type="button" className="button secondary" disabled={busyId !== null} onClick={() => void fetchSubstitutes(allocation)}>
+                            {busyId === `sub-list-${allocation.id}` ? 'Loading...' : 'Substitute'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </article>
